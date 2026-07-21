@@ -123,9 +123,13 @@ CREATE INDEX idx_item_category       ON maintenance_service_item(category_code);
 
 -- فهرس pgvector للبحث الدلالي السريع (HNSW: أدق وأسرع في القراءة من IVFFlat لكتالوج بهذا الحجم)
 -- ملاحظة: يُبنى فقط بعد ما الأعمدة تتملى بـ embeddings حقيقية (راجع generate_embeddings.py)
+-- m/ef_construction مضبوطين صراحة بدل الاعتماد على الافتراضي: مناسبين لكتالوج
+-- من مئات لآلاف البنود (دقة عالية بدون بطء بناء محسوس). لو الكتالوج كبر لعشرات
+-- الآلاف، ارفع ef_construction لـ128.
 CREATE INDEX idx_item_embedding_hnsw
     ON maintenance_service_item
     USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64)
     WHERE embedding IS NOT NULL;
 
 -- ============================================================================
@@ -157,6 +161,15 @@ RETURNS TABLE (
     ORDER BY i.embedding <=> query_embedding
     LIMIT match_count;
 $$ LANGUAGE sql STABLE;
+
+-- ضبط دقة البحث وقت الاستعلام (session-level). القيمة الافتراضية 40؛ ارفعها
+-- لدقة أعلى (وبطء أكبر شوية) لو نتائج find_similar_service_items() مش مقنعة:
+--   SET hnsw.ef_search = 40;
+--
+-- بعد أي دفعة كبيرة من UPDATE على عمود embedding (مثلاً بعد تشغيل
+-- generate_embeddings.py على كل الكتالوج لأول مرة)، أعد بناء الفهرس بدون قفل
+-- الجدول (مهم لو النظام شغال live):
+--   REINDEX INDEX CONCURRENTLY idx_item_embedding_hnsw;
 
 -- ============================================================================
 -- ملاحظات التنفيذ:
