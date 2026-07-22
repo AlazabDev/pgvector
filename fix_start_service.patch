@@ -1,0 +1,70 @@
+From 80cbf43bea9b69e878742a346311e353da70667b Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.local>
+Date: Wed, 22 Jul 2026 02:47:40 +0000
+Subject: [PATCH] =?UTF-8?q?=D8=A5=D8=B5=D9=84=D8=A7=D8=AD=20start=5Fservic?=
+ =?UTF-8?q?e:=20=D8=A7=D8=B3=D8=AA=D8=A8=D8=AF=D8=A7=D9=84=20systemctl=20(?=
+ =?UTF-8?q?=D8=BA=D9=8A=D8=B1=20=D9=85=D9=88=D8=AB=D9=88=D9=82=20=D9=81?=
+ =?UTF-8?q?=D9=8A=20=D8=A8=D9=8A=D8=A6=D8=A7=D8=AA=20systemd=20=D8=AC?=
+ =?UTF-8?q?=D8=B2=D8=A6=D9=8A/=D8=AD=D8=A7=D9=88=D9=8A=D8=A7=D8=AA)=20?=
+ =?UTF-8?q?=D8=A8=D9=80pg=5Fctlcluster=20+=20=D8=A7=D9=86=D8=AA=D8=B8?=
+ =?UTF-8?q?=D8=A7=D8=B1=20=D9=81=D8=B9=D9=84=D9=8A=20=D9=84=D8=B8=D9=87?=
+ =?UTF-8?q?=D9=88=D8=B1=20socket=20=D8=A7=D9=84=D8=A7=D8=AA=D8=B5=D8=A7?=
+ =?UTF-8?q?=D9=84?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+المشكلة: is-active --quiet postgresql كان بيرجع 'active' (target عام) حتى لو
+الكتلة الجديدة تحديدًا (17/main على المنفذ المخصص) مش شغالة فعليًا، فالسكريبت
+كان بيكمل لخطوة CREATE EXTENSION قبل ما الـsocket يكون موجود أصلاً.
+
+مُختبَر: أعدت إنتاج فشل systemctl is-active في بيئة container بدون systemd
+حقيقي (نفس نمط مشكلة WSL السابقة)، وأكدت إن pg_ctlcluster + فحص وجود
+/var/run/postgresql/.s.PGSQL.$PORT بيشتغل بشكل موثوق بدونه.
+---
+ setup_postgres_az.sh | 29 ++++++++++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/setup_postgres_az.sh b/setup_postgres_az.sh
+index 3551c88..1b8f6f3 100644
+--- a/setup_postgres_az.sh
++++ b/setup_postgres_az.sh
+@@ -337,11 +337,30 @@ EOF
+ # ================================================================
+ start_service() {
+     step "تشغيل خدمة PostgreSQL $PG_VER"
+-    # على Debian/Ubuntu
+-    systemctl restart postgresql || true
+-    sleep 3
+-    systemctl is-active --quiet postgresql || error "خدمة PostgreSQL لا تعمل"
+-    success "خدمة PostgreSQL قيد التشغيل"
++
++    # ملاحظة مهمة: "systemctl restart postgresql" بيشتغل على target عام بيغطي
++    # كل الكتل المسجّلة، وممكن يرجّع "active" حتى لو الكتلة الجديدة تحديدًا
++    # (بالمنفذ المخصص) مش شغالة فعليًا — خصوصًا على حاويات/أنظمة systemd فيها
++    # مش شغال بالكامل كـPID 1 (شفنا نفس النمط في مشكلة WSL قبل كده). الحل
++    # الأضمن: pg_ctlcluster مباشرة (أداة Debian الأصلية، بتشتغل بدون أي اعتماد
++    # على systemd)، مع انتظار فعلي لظهور socket الاتصال بدل sleep ثابت أعمى.
++    if command -v pg_ctlcluster >/dev/null 2>&1; then
++        pg_ctlcluster $PG_VER $PG_CLUSTER restart 2>&1 || pg_ctlcluster $PG_VER $PG_CLUSTER start || true
++    else
++        systemctl restart postgresql || true
++    fi
++
++    local socket_path="/var/run/postgresql/.s.PGSQL.$PG_PORT"
++    local waited=0
++    until [[ -S "$socket_path" ]] || [[ $waited -ge 30 ]]; do
++        sleep 1
++        waited=$((waited + 1))
++    done
++
++    if [[ ! -S "$socket_path" ]]; then
++        error "خدمة PostgreSQL لا تستجيب على المنفذ $PG_PORT (الـsocket $socket_path غير موجود بعد ${waited} ثانية) — راجع: pg_lsclusters و tail $PG_LOG"
++    fi
++    success "خدمة PostgreSQL قيد التشغيل فعليًا على المنفذ $PG_PORT (تم التحقق من الـsocket)"
+ }
+ 
+ # ================================================================
+-- 
+2.43.0
+
