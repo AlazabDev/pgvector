@@ -118,6 +118,30 @@ install_system_packages() {
 }
 
 # ================================================================
+# 5ب. توليد الـlocale العربي (ar_EG.UTF-8) صراحة
+# ================================================================
+# ملاحظة: تثبيت حزمة language-pack-ar وحده لا يضمن دائمًا توليد الـlocale
+# فعليًا على كل الأنظمة (خصوصًا الحاويات/الصور المصغّرة اللي بتخطي بعض
+# postinst hooks). لو الـlocale مش موجود وقت initdb، هتفشل الكتلة برسالة
+# "is not a valid server encoding name" رغم إن المشكلة الحقيقية هي غياب
+# الـlocale نفسه وليست الترميز.
+ensure_locale() {
+    step "التأكد من توليد الـlocale العربي ($LOCALE)"
+
+    if locale -a 2>/dev/null | grep -qi "^ar_EG.utf8$\|^ar_EG.UTF-8$"; then
+        success "الـlocale $LOCALE موجود بالفعل"
+        return
+    fi
+
+    warning "الـlocale $LOCALE غير موجود — جارٍ توليده..."
+    if ! grep -q "^ar_EG.UTF-8 UTF-8" /etc/locale.gen 2>/dev/null; then
+        echo "ar_EG.UTF-8 UTF-8" >> /etc/locale.gen
+    fi
+    locale-gen ar_EG.UTF-8 || error "فشل توليد الـlocale $LOCALE"
+    success "تم توليد الـlocale $LOCALE بنجاح"
+}
+
+# ================================================================
 # 6. تثبيت pgvector من مصدر محدد (اختياري: فرع/وضع نسخة)
 # ================================================================
 install_pgvector() {
@@ -163,7 +187,11 @@ create_cluster() {
 
     if command -v pg_createcluster >/dev/null 2>&1; then
         pg_dropcluster $PG_VER $PG_CLUSTER --stop 2>/dev/null || true
-        pg_createcluster -p $PG_PORT -e $LOCALE $PG_VER $PG_CLUSTER || error "فشل إنشاء الكتلة"
+        # مهم: -e/--encoding مخصص لترميز قاعدة البيانات (UTF8) وليس للـlocale.
+        # الاستخدام القديم "-e $LOCALE" كان بيبعت "ar_EG.UTF-8" كترميز فيرفضه
+        # initdb برسالة "is not a valid server encoding name". اللغة بتتحدد
+        # عبر --locale صراحة.
+        pg_createcluster -p $PG_PORT -e UTF8 --locale=$LOCALE $PG_VER $PG_CLUSTER || error "فشل إنشاء الكتلة"
         success "تم إنشاء الكتلة على المنفذ $PG_PORT"
     else
         error "الأدوات الخاصة بإدارة الكتل (pg_createcluster) غير موجودة على هذا النظام"
@@ -590,6 +618,7 @@ main() {
     check_root
     install_system_packages
     install_pgvector
+    ensure_locale
     clean_old_clusters
     create_cluster
     configure_postgresql
