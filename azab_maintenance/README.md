@@ -22,6 +22,7 @@
 | `seed/كتالوج_بنود_الصيانة_المعتمد_v1.xlsx` | المرجع الكامل الأصلي (لوحة قيادة + الكتالوج + المرادفات + دليل التصنيفات) |
 | `scripts/load_seed_data.py` | يحمّل التصنيفات + البنود + يفكّك عمود المرادفات لجدول `maintenance_service_item_alias` |
 | `scripts/generate_embeddings.py` | يحسب embedding لكل بند (الاسم + مرادفاته) عبر مزوّد قابل للاستبدال (افتراضيًا OpenAI `text-embedding-3-small`, 1536 بُعد) ويخزّنه |
+| `scripts/sync_foundry_knowledge.py` | يصدّر الكتالوج المعتمد (حالة `معتمد` فقط) كملفات Markdown مقسّمة بالتصنيف، ويزامنها كمعرفة (File Search / vector store) للوكيل **az-agent-maint** على Azure AI Foundry Agent Service |
 
 ## الفرق الجوهري عن `maintenance_schema.sql` الأصلي
 
@@ -30,6 +31,36 @@
 لكن بنفس المعنى ("تسريب خرطوم الحوض" و"نز مية من توصيلة الحوض" مثلاً) ما كانوا
 هيتمسكوا بتشابه الحروف. عمود `embedding` + دالة `find_similar_service_items()`
 يحلّوا المشكلة دي: البحث بيبقى بالمعنى مش بالحروف.
+
+## ربط الكتالوج بالوكيل az-agent-maint (Azure AI Foundry)
+
+`scripts/sync_foundry_knowledge.py` يخلي قاعدة البيانات "تغذّي" الوكيل بمعرفة
+محدّثة بدل ما يعتمد على تدريبه الأصلي فقط: يصدّر كل تصنيف نشط كملف Markdown
+(بنود بحالة `معتمد` فقط)، يرفعهم لـ Foundry، ينشئ vector store جديد، ويحدّث
+الوكيل ليستخدمه — ثم يحذف الـvector store القديم بعد التأكد من نجاح التبديل
+(Foundry بيسمح بـvector store واحد بس لكل وكيل، فكل مزامنة = استبدال كامل).
+
+```bash
+pip install azure-ai-agents azure-identity --break-system-packages
+export FOUNDRY_PROJECT_ENDPOINT="https://<project>.services.ai.azure.com/api/projects/<project-name>"
+export FOUNDRY_AGENT_ID="asst_..."   # من صفحة az-agent-maint في Foundry
+az login                              # أو أي مصدر آخر لـ DefaultAzureCredential
+python3 azab_maintenance/scripts/sync_foundry_knowledge.py
+```
+
+شغّله يدويًا بعد أي دفعة اعتماد بنود جديدة، أو على cron دوري (يوميًا مثلًا).
+
+**حدود ما تم اختباره في هذا الجزء تحديدًا (بصراحة):**
+- ✅ **مُختبَر فعليًا:** جزء استخراج الكتالوج من Postgres وتحويله لملفات Markdown
+  (شغّلته على قاعدة البيانات التجريبية، ونتج 15 ملف/766 بند بالضبط كما متوقع).
+- ✅ **مُتحقَّق منه (لا مُخمَّن):** كل أسماء الدوال والتوقيعات المستخدمة من حزمة
+  `azure-ai-agents` (مثل `agents_client.files.upload_and_poll`،
+  `agents_client.vector_stores.create_and_poll`، `FileSearchTool`) تم فحصها
+  مباشرة مقابل الحزمة الحقيقية المثبَّتة (v1.1.0)، مش كتابة من الذاكرة.
+- ❌ **غير مُختبَر:** التشغيل الفعلي مقابل مشروع Foundry حقيقي — محتاج
+  `FOUNDRY_PROJECT_ENDPOINT` ومعرّف وكيل فعليين ومصادقة Entra ID مش متاحين هنا.
+  جرّبه الأول على وكيل تجريبي (نسخة/staging لـ az-agent-maint لو متاحة) قبل
+  ما تشغّله على النسخة اللي المستخدمين الحقيقيين بيكلّموها.
 
 ## خطوات التشغيل
 
